@@ -1,0 +1,10 @@
+0 1 Better solution! Jury = 527445 Participant = 521595
+1 1 Better solution! Jury = 405990 Participant = 388395
+2 1 Better solution! Jury = 544095 Participant = 510525
+3 1 Better solution! Jury = 747855 Participant = 640035
+4 1 Better solution! Jury = 156195 Participant = 151515
+5 1 Better solution! Jury = 488205 Participant = 403760
+6 1 Better solution! Jury = 153720 Participant = 136800
+7 1 Better solution! Jury = 186795 Participant = 175950
+8 -2 Invalid solution from participant
+9 1 Better solution! Jury = 327330 Participant = 309015
