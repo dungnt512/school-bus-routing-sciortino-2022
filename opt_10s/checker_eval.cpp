@@ -10,6 +10,12 @@ const db eps = 1e-9;
 // string DIR = "opt_10s";
 string DIR = ".";
 
+template<class U, class V>
+ostream& operator << (ostream &os, pair<U, V> p) {
+  os << p.first << " " << p.second;
+  return os;
+}
+
 struct Walk {
   int stop;
   db time = INFINITY, distance = INFINITY;
@@ -19,7 +25,7 @@ int solve(string filename) {
   // freopen("test.in", "r", stdin);
   string INP_DIR = DIR + "/" + filename + ".in";
   string OUT_DIR = DIR + "/" + filename + ".out";
-  string ANS_DIR = DIR + "/" + filename + ".txt";
+  string ANS_DIR = DIR + "/" + filename + ".txt3";
 
   ifstream fin(INP_DIR);
 
@@ -27,6 +33,7 @@ int solve(string filename) {
   db m_e, m_w, sec_per_passenger, ser_per_stop, m_t;
   // scanf("%d %d %d %lf %lf %lf %d %lf %lf", &num_stop, &num_addr, &num_walks, &m_e, &m_w, &m_t, &capacity, &sec_per_passenger, &ser_per_stop);
   fin >> num_stop >> num_addr >> num_walks >> m_e >> m_w >> m_t >> capacity >> sec_per_passenger >> ser_per_stop;
+  m_t *= 60;
 
   vector<db> x(num_stop), y(num_stop);
   for (int i = 0; i < num_stop; i++) {
@@ -71,7 +78,7 @@ int solve(string filename) {
   }
 
 
-  auto calc = [&](istream& is) -> db {
+  auto calc = [&](istream& is) -> pair<int, db> {
     int n_bus;
     // scanf("%d", &n_bus);
     is >> n_bus;
@@ -83,14 +90,20 @@ int solve(string filename) {
       is >> route_size;
       vector<int> route(route_size), weight(route_size);
       int tot_c = 0;
+      set<int> used;
       for (int j = 0; j < route_size; j++) {
         // scanf("%d %d", &route[j], &weight[j]);
         is >> route[j] >> weight[j];
+        if (!route[j]) 
+          return {-1, -1};
+        if (used.find(route[j]) != end(used))
+          return {-1, -1};
+        used.insert(route[j]);
         tot[route[j]] += weight[j];
         tot_c += weight[j];
       }
       if (tot_c > capacity) 
-        return -1;
+        return {-1, -1};
       db T = drive_time[route.back()][0];
       for (int i = 1; i < route_size; i++) {
         T += drive_time[route[i - 1]][route[i]];
@@ -100,7 +113,8 @@ int solve(string filename) {
         T += sec_per_passenger * weight[i];
       }
       if (T > m_t + eps) 
-        obj += m_t + m_t * (1 + T - m_t);
+        // obj += m_t + m_t * (1 + T - m_t);
+        return {-1, -1};
       else 
         obj += T;
     }
@@ -109,16 +123,17 @@ int solve(string filename) {
       // scanf("%d", &assign[j]);
       is >> assign[j];
       if (walk_distance[j][assign[j]] > m_w + eps) 
-        return -1;
+        return {-1, -1};
       tot_a[assign[j]] += num_passengers[j];
     }
 
     for (int i = 0; i < num_stop; i++) {
-      if (tot[i] < tot_a[i]) 
-        return -1;
+      // if (tot[i] < tot_a[i]) 
+      if (tot[i] != tot_a[i])
+        return {-1, -1};
     }
 
-    return obj;
+    return {n_bus, obj};
   };
 
   ll startTime = chrono::steady_clock::now().time_since_epoch().count();
@@ -129,26 +144,26 @@ int solve(string filename) {
 
   ifstream fans(OUT_DIR);
   ifstream fout(ANS_DIR);
-  db w_ans = calc(fans);
-  db w_out = calc(fout);
-  if (w_ans < 0) {
+  auto w_ans = calc(fans);
+  auto w_out = calc(fout);
+  if (w_ans.first < 0) {
     // printf("%d Invalid solution from jury\n", -2);
     cout << filename << " " << -2 << " Invalid solution from jury\n";
     cerr << filename << " " << -2 << " Invalid solution from jury\n";
     return 0;
   }
-  if (w_out < 0) {
+  if (w_out.first < 0) {
     // printf("%d Invalid solution from participant\n", -2);
     cout << filename << " " << -2 << " Invalid solution from participant\n";
     cerr << filename << " " << -2 << " Invalid solution from participant\n";
     return 0;
   }
-  if (w_out + eps < w_ans) {
+  if (w_out < w_ans) {
     // printf("%d Better solution! Jury = %lf Participant = %lf\n", 1, w_ans, w_out);
     cout << filename << " " << 1 << " Better solution! Jury = " << w_ans << " Participant = " << w_out << "\n";
     cerr << filename << " " << 1 << " Better solution! Jury = " << w_ans << " Participant = " << w_out << "\n";
   }
-  else if (w_out > w_ans + eps) {
+  else if (w_out > w_ans) {
     // printf("%d Worse solution! Jury = %lf Participant = %lf\n", -1, w_ans, w_out);
     cout << filename << " " << -1 << " Worse solution! Jury = " << w_ans << " Participant = " << w_out << "\n";
     cerr << filename << " " << -1 << " Worse solution! Jury = " << w_ans << " Participant = " << w_out << "\n";
@@ -172,7 +187,7 @@ int main(int argc, char** argv) {
   // cin.tie(0)->sync_with_stdio(0); 
 
   // for (int i = 0; i < 10; i++) {
-  for (int i = 10; i < 20; i++) {
+  for (int i = 0; i < 20; i++) {
     string filename = to_string(i);
     solve(filename);
   }

@@ -32,19 +32,21 @@ struct ProblemData {
   struct WalkOption { int stop; db dist; db time; };
   vector<vector<WalkOption>> walkOptions; // walkOptions[address] list of feasible stops
 
-  // Penalty on route duration (same as your original code).
+  // Penalty on route duration.
   // If routeTime <= maxJourneyTime: cost = routeTime.
-  // Else: cost is large (encourages feasibility).
+  // Else: cost = m_t + m_t * (2 + routeTime - m_t).
   db penalty(db routeTime) const {
     if (routeTime > P.maxJourneyTime + EPS) {
-      return P.maxJourneyTime + P.maxJourneyTime * (1.0 + routeTime - P.maxJourneyTime);
+      return P.maxJourneyTime + P.maxJourneyTime * (2.0 + routeTime - P.maxJourneyTime);
     }
     return routeTime;
   }
 
   // Objective contribution of a route (hard capacity is enforced separately).
-  db routeCost(db routeTime, int /*load*/) const {
-    return penalty(routeTime);
+  // Adds m_t per non-empty route.
+  db routeCost(db routeTime, int load) const {
+    if (load <= 0) return 0;
+    return penalty(routeTime) + P.maxJourneyTime;
   }
 
 
@@ -151,6 +153,35 @@ static void mergeDuplicateStopsInRoute(Route& route) {
 
   route.stops.swap(newStops);
   route.weight.swap(newWeight);
+}
+
+static int findStopPosInRoute(const Route& rt, int stop) {
+  for (int i = 0; i < (int)rt.stops.size(); i++) {
+    if (rt.stops[i] == stop) return i;
+  }
+  return -1;
+}
+
+static int routeLoadSum(const Route& rt) {
+  int load = 0;
+  for (int w : rt.weight) load += w;
+  return load;
+}
+
+static db computeRouteCost(const ProblemData& data, const Route& rt) {
+  int n = (int)rt.stops.size();
+  int load = 0;
+  db dwellSum = 0;
+  for (int i = 0; i < n; i++) {
+    load += rt.weight[i];
+    dwellSum += data.dwell(rt.weight[i]);
+  }
+  db travel = 0;
+  if (n) {
+    travel += data.driveTime[rt.stops.back()][0];
+    for (int i = 1; i < n; i++) travel += data.driveTime[rt.stops[i - 1]][rt.stops[i]];
+  }
+  return data.routeCost(travel + dwellSum, load);
 }
 
 static void rebuildRouteMetrics(const ProblemData& data, Solution& sol, int routeId) {
@@ -418,6 +449,14 @@ static bool cleanupEmptyRoutes(Solution& sol) {
   return sol.routes.size() != before;
 }
 
+static void normalizeRoutes(const ProblemData& data, Solution& sol) {
+  for (auto& rt : sol.routes) {
+    if (!rt.stops.empty()) mergeDuplicateStopsInRoute(rt);
+  }
+  cleanupEmptyRoutes(sol);
+  rebuildAll(data, sol);
+}
+
 static bool validRouteIndex(const Solution& sol, int r) {
   return 0 <= r && r < (int)sol.routes.size();
 }
@@ -434,6 +473,117 @@ static bool validRange(const Route& rt, int left, int len) {
   if (len <= 0) return false;
   if (left < 0) return false;
   return left + len <= (int)rt.stops.size();
+}
+
+static int countNonEmptyRoutes(const Solution& sol) {
+  int count = 0;
+  for (const auto& rt : sol.routes) if (!rt.stops.empty()) count++;
+  return count;
+}
+
+static bool tryEliminateRoute(const ProblemData& data, Solution& sol, int rid) {
+  if (rid < 0 || rid >= (int)sol.routes.size()) return false;
+  if (sol.routes[rid].stops.empty()) return false;
+  if (countNonEmptyRoutes(sol) <= 1) return false;
+
+  vector<Route> routes = sol.routes;
+  const Route& src = routes[rid];
+  int visitCount = (int)src.stops.size();
+  if (visitCount == 0) return false;
+
+  vector<int> loads(routes.size(), 0);
+  for (int r = 0; r < (int)routes.size(); r++) {
+    loads[r] = routeLoadSum(routes[r]);
+  }
+
+  for (int i = 0; i < visitCount; i++) {
+    int stop = src.stops[i];
+    int wt = src.weight[i];
+    if (wt <= 0) continue;
+
+    int bestRoute = -1;
+    int bestPos = -1;
+    bool bestExisting = false;
+    db bestDelta = 1e100;
+
+    for (int r = 0; r < (int)routes.size(); r++) {
+      if (r == rid) continue;
+      if (routes[r].stops.empty()) continue;
+      if (data.P.hardCapacity && loads[r] + wt > data.P.capacity) continue;
+
+      db oldCost = computeRouteCost(data, routes[r]);
+      int posExisting = findStopPosInRoute(routes[r], stop);
+      if (posExisting != -1) {
+        Route tmp = routes[r];
+        tmp.weight[posExisting] += wt;
+        db delta = computeRouteCost(data, tmp) - oldCost;
+        if (delta + EPS < bestDelta) {
+          bestDelta = delta;
+          bestRoute = r;
+          bestPos = posExisting;
+          bestExisting = true;
+        }
+      } else {
+        int n = (int)routes[r].stops.size();
+        for (int pos = 0; pos <= n; pos++) {
+          Route tmp = routes[r];
+          tmp.stops.insert(tmp.stops.begin() + pos, stop);
+          tmp.weight.insert(tmp.weight.begin() + pos, wt);
+          db delta = computeRouteCost(data, tmp) - oldCost;
+          if (delta + EPS < bestDelta) {
+            bestDelta = delta;
+            bestRoute = r;
+            bestPos = pos;
+            bestExisting = false;
+          }
+        }
+      }
+    }
+
+    if (bestRoute == -1) return false;
+
+    if (bestExisting) {
+      routes[bestRoute].weight[bestPos] += wt;
+    } else {
+      int pos = min(max(bestPos, 0), (int)routes[bestRoute].stops.size());
+      routes[bestRoute].stops.insert(routes[bestRoute].stops.begin() + pos, stop);
+      routes[bestRoute].weight.insert(routes[bestRoute].weight.begin() + pos, wt);
+    }
+    loads[bestRoute] += wt;
+  }
+
+  routes[rid].stops.clear();
+  routes[rid].weight.clear();
+
+  sol.routes.swap(routes);
+  cleanupEmptyRoutes(sol);
+  rebuildAll(data, sol);
+  return true;
+}
+
+static void reduceRoutesPhase(const ProblemData& data, Solution& sol, int maxPasses) {
+  for (int pass = 0; pass < maxPasses; pass++) {
+    if (countNonEmptyRoutes(sol) <= 1) return;
+
+    vector<int> order;
+    order.reserve(sol.routes.size());
+    for (int r = 0; r < (int)sol.routes.size(); r++) {
+      if (!sol.routes[r].stops.empty()) order.push_back(r);
+    }
+    sort(order.begin(), order.end(), [&](int a, int b) {
+      if (sol.routeLoad[a] != sol.routeLoad[b]) return sol.routeLoad[a] < sol.routeLoad[b];
+      return sol.routes[a].stops.size() < sol.routes[b].stops.size();
+    });
+
+    bool removed = false;
+    for (int rid : order) {
+      if (tryEliminateRoute(data, sol, rid)) {
+        removed = true;
+        break;
+      }
+    }
+    if (!removed) break;
+  }
 }
 
 struct Timer {
@@ -1471,6 +1621,7 @@ struct ReassignAddressOperator : MoveOperator {
   int maxRemovalCandidates = 12;
   int maxInsertRoutes = 6;
   int maxInsertPos = 6;
+  bool allowNewRoute = true;
 
   string name() const override { return "ReassignAddress"; }
   db weight() const override { return w; }
@@ -1716,7 +1867,7 @@ struct ReassignAddressOperator : MoveOperator {
       }
 
       // Create a new route for newStop.
-      if (!data.P.hardCapacity || wPassengers <= data.P.capacity) {
+      if (allowNewRoute && (!data.P.hardCapacity || wPassengers <= data.P.capacity)) {
         Route nr;
         nr.stops.push_back(newStop);
         nr.weight.push_back(wPassengers);
@@ -1833,6 +1984,7 @@ struct StopMergeOperator : MoveOperator {
   int maxStopCandidates = 6;
   int maxInsertRoutes = 8;
   int maxInsertPos = 8;
+  bool allowNewRoute = true;
 
   string name() const override { return "StopMerge"; }
   db weight() const override { return w; }
@@ -2047,7 +2199,7 @@ struct StopMergeOperator : MoveOperator {
         }
 
         // New route option.
-        if (!data.P.hardCapacity || totalPassengers <= data.P.capacity) {
+        if (allowNewRoute && (!data.P.hardCapacity || totalPassengers <= data.P.capacity)) {
           Route nr;
           nr.stops.push_back(newStop);
           nr.weight.push_back((int)totalPassengers);
@@ -3084,6 +3236,7 @@ static ProblemData readProblem() {
   cin >> data.stopCount >> data.addressCount >> data.walkCount
       >> m_e >> m_w >> m_t
       >> capacity >> secPerPassenger >> secPerStop;
+  m_t *= 60;
 
   data.P.capacity = capacity;
   data.P.maxWalkDistance = m_w;
@@ -3303,18 +3456,28 @@ int main() {
   Solution sol = buildInitialSolution(data, rng);
   improveAllRoutes2Opt(data, sol, 1);
 
+  // Phase 1: reduce route count by trying to eliminate routes.
+  reduceRoutesPhase(data, sol, 50);
+
   LocalSearchBestOfEach ls;
   ls.samplesPerOperator = 500;
   ls.timeLimitSeconds = 600;
 
-  ls.ops.push_back(make_unique<Relocate1Operator>());
+  auto relocate = make_unique<Relocate1Operator>();
+  relocate->pNewRoute = 0.0;
+  ls.ops.push_back(std::move(relocate));
   ls.ops.push_back(make_unique<Swap2Operator>());
   ls.ops.push_back(make_unique<TwoOptIntraOperator>());
   ls.ops.push_back(make_unique<TwoOptInterOperator>());
-  ls.ops.push_back(make_unique<OrOptOperator>());
-  ls.ops.push_back(make_unique<ReassignAddressOperator>());
-  ls.ops.push_back(make_unique<StopMergeOperator>());
-  ls.ops.push_back(make_unique<SplitRouteOperator>());
+  auto orOpt = make_unique<OrOptOperator>();
+  orOpt->pNewRoute = 0.0;
+  ls.ops.push_back(std::move(orOpt));
+  auto reassign = make_unique<ReassignAddressOperator>();
+  reassign->allowNewRoute = false;
+  ls.ops.push_back(std::move(reassign));
+  auto stopMerge = make_unique<StopMergeOperator>();
+  stopMerge->allowNewRoute = false;
+  ls.ops.push_back(std::move(stopMerge));
   ls.ops.push_back(make_unique<ThreeOptOperator>());
   ls.ops.push_back(make_unique<ThreePointOperator>());
   ls.ops.push_back(make_unique<CrossExchangeOperator>());
@@ -3324,6 +3487,7 @@ int main() {
 
   // Safety: ensure we still serve all passengers after large moves (especially k-exchange).
   repairSolutionToMeetDemand(data, sol);
+  normalizeRoutes(data, sol);
   improveAllRoutes2Opt(data, sol, 1);
 
 
