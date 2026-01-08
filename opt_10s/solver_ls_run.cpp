@@ -6,6 +6,7 @@ using ll = long long;
 using db = double;
 
 const db EPS = 1e-9;
+static bool g_keepEmptyRoutes = false;
 
 struct Parameters {
   int capacity = 70;
@@ -37,7 +38,7 @@ struct ProblemData {
   // Else: cost = m_t + m_t * (2 + routeTime - m_t).
   db penalty(db routeTime) const {
     if (routeTime > P.maxJourneyTime + EPS) {
-      return P.maxJourneyTime + P.maxJourneyTime * (4.0 + routeTime - P.maxJourneyTime);
+      return P.maxJourneyTime + P.maxJourneyTime * (2.0 + routeTime - P.maxJourneyTime);
     }
     return routeTime;
   }
@@ -46,7 +47,7 @@ struct ProblemData {
   // Adds m_t per non-empty route.
   db routeCost(db routeTime, int load) const {
     if (load <= 0) return 0;
-    return penalty(routeTime) + P.maxJourneyTime * 2;
+    return penalty(routeTime) + P.maxJourneyTime;
   }
 
 
@@ -184,13 +185,18 @@ static db computeRouteCost(const ProblemData& data, const Route& rt) {
   return data.routeCost(travel + dwellSum, load);
 }
 
-static db computeSolutionCost(const ProblemData& data, const Solution& sol) {
-  db total = 0;
-  for (const auto& rt : sol.routes) {
-    if (rt.stops.empty()) continue;
-    total += computeRouteCost(data, rt);
+static db computeRouteTime(const ProblemData& data, const Route& rt) {
+  int n = (int)rt.stops.size();
+  db dwellSum = 0;
+  for (int i = 0; i < n; i++) {
+    dwellSum += data.dwell(rt.weight[i]);
   }
-  return total;
+  db travel = 0;
+  if (n) {
+    travel += data.driveTime[rt.stops.back()][0];
+    for (int i = 1; i < n; i++) travel += data.driveTime[rt.stops[i - 1]][rt.stops[i]];
+  }
+  return travel + dwellSum;
 }
 
 static void rebuildRouteMetrics(const ProblemData& data, Solution& sol, int routeId) {
@@ -450,6 +456,7 @@ static bool enforceCapacity(const ProblemData& data, int newLoad) {
 }
 
 static bool cleanupEmptyRoutes(Solution& sol) {
+  if (g_keepEmptyRoutes) return false;
   size_t before = sol.routes.size();
   sol.routes.erase(
       remove_if(sol.routes.begin(), sol.routes.end(),
@@ -490,17 +497,14 @@ static int countNonEmptyRoutes(const Solution& sol) {
   return count;
 }
 
-static bool buildEliminatedSolution(const ProblemData& data, const Solution& base, int rid,
-                                    const vector<int>& order, Solution& out) {
-  if (rid < 0 || rid >= (int)base.routes.size()) return false;
-  if (base.routes[rid].stops.empty()) return false;
-  if (countNonEmptyRoutes(base) <= 1) return false;
+static bool tryEliminateRoute(const ProblemData& data, Solution& sol, int rid) {
+  if (rid < 0 || rid >= (int)sol.routes.size()) return false;
+  if (sol.routes[rid].stops.empty()) return false;
+  if (countNonEmptyRoutes(sol) <= 1) return false;
 
-  out = base;
-  vector<Route>& routes = out.routes;
-  vector<int> srcStops = routes[rid].stops;
-  vector<int> srcWeights = routes[rid].weight;
-  int visitCount = (int)srcStops.size();
+  vector<Route> routes = sol.routes;
+  const Route& src = routes[rid];
+  int visitCount = (int)src.stops.size();
   if (visitCount == 0) return false;
 
   vector<int> loads(routes.size(), 0);
@@ -508,10 +512,9 @@ static bool buildEliminatedSolution(const ProblemData& data, const Solution& bas
     loads[r] = routeLoadSum(routes[r]);
   }
 
-  for (int idx : order) {
-    if (idx < 0 || idx >= visitCount) continue;
-    int stop = srcStops[idx];
-    int wt = srcWeights[idx];
+  for (int i = 0; i < visitCount; i++) {
+    int stop = src.stops[i];
+    int wt = src.weight[i];
     if (wt <= 0) continue;
 
     int bestRoute = -1;
@@ -568,14 +571,13 @@ static bool buildEliminatedSolution(const ProblemData& data, const Solution& bas
   routes[rid].stops.clear();
   routes[rid].weight.clear();
 
-  cleanupEmptyRoutes(out);
-  rebuildAll(data, out);
+  sol.routes.swap(routes);
+  cleanupEmptyRoutes(sol);
+  rebuildAll(data, sol);
   return true;
 }
 
-static void reduceRoutesPhase(const ProblemData& data, Solution& sol, mt19937& rng, int maxPasses) {
-  const int maxCandidates = 8;
-  const int triesPerRoute = 3;
+static void reduceRoutesPhase(const ProblemData& data, Solution& sol, int maxPasses) {
   for (int pass = 0; pass < maxPasses; pass++) {
     if (countNonEmptyRoutes(sol) <= 1) return;
 
@@ -588,32 +590,15 @@ static void reduceRoutesPhase(const ProblemData& data, Solution& sol, mt19937& r
       if (sol.routeLoad[a] != sol.routeLoad[b]) return sol.routeLoad[a] < sol.routeLoad[b];
       return sol.routes[a].stops.size() < sol.routes[b].stops.size();
     });
-    if ((int)order.size() > maxCandidates) order.resize(maxCandidates);
 
     bool removed = false;
-    db bestCost = 1e100;
-    Solution bestSol;
-
     for (int rid : order) {
-      int n = (int)sol.routes[rid].stops.size();
-      vector<int> ord(n);
-      iota(ord.begin(), ord.end(), 0);
-      for (int t = 0; t < triesPerRoute; t++) {
-        if (t > 0) shuffle(ord.begin(), ord.end(), rng);
-        Solution cand;
-        if (!buildEliminatedSolution(data, sol, rid, ord, cand)) continue;
-        db candCost = cand.score.empty() ? computeSolutionCost(data, cand) : cand.score[0];
-        if (candCost + EPS < bestCost) {
-          bestCost = candCost;
-          bestSol = std::move(cand);
-          removed = true;
-        }
+      if (tryEliminateRoute(data, sol, rid)) {
+        removed = true;
+        break;
       }
     }
-
     if (!removed) break;
-    sol = std::move(bestSol);
-    improveAllRoutes2Opt(data, sol, 1);
   }
 }
 
@@ -685,7 +670,7 @@ struct StopMergeMove {
   bool addExisting = true;
 };
 
-struct SplitRouteMove { int route, cut; };
+struct SplitRouteMove { int route, cut; int emptyRoute; };
 
 struct ThreeOptMove {
   int route;
@@ -1720,18 +1705,24 @@ struct ReassignAddressOperator : MoveOperator {
       if (data.P.hardCapacity && w > data.P.capacity) continue;
 
       const auto& opts = data.walkOptions[a];
-      if ((int)opts.size() < 2) continue;
+      int feasibleCount = 0;
+      for (const auto& opt : opts) {
+        if (opt.dist <= data.P.maxWalkDistance + EPS) feasibleCount++;
+      }
+      if (feasibleCount < 2) continue;
 
       int sOld = sol.assign[a];
       int pick = -1;
       if (!opts.empty()) {
         uniform_int_distribution<int> pickOpt(0, (int)opts.size() - 1);
-        for (int t = 0; t < 6; t++) {
+        for (int t = 0; t < 10; t++) {
           int idx = pickOpt(rng);
+          if (opts[idx].dist > data.P.maxWalkDistance + EPS) continue;
           if (opts[idx].stop != sOld) { pick = idx; break; }
         }
         if (pick == -1) {
           for (int idx = 0; idx < (int)opts.size(); idx++) {
+            if (opts[idx].dist > data.P.maxWalkDistance + EPS) continue;
             if (opts[idx].stop != sOld) { pick = idx; break; }
           }
         }
@@ -2333,6 +2324,7 @@ struct StopMergeOperator : MoveOperator {
 // =======================
 struct SplitRouteOperator : MoveOperator {
   db w = 0.6;
+  bool requireEmptyRoute = false;
   string name() const override { return "SplitRoute"; }
   db weight() const override { return w; }
 
@@ -2353,6 +2345,17 @@ struct SplitRouteOperator : MoveOperator {
 
     uniform_int_distribution<int> pickCut(0, n - 2); // prefix [0..cut], suffix [cut+1..n-1]
     int cut = pickCut(rng);
+
+    int emptyRoute = -1;
+    if (requireEmptyRoute) {
+      vector<int> empties;
+      for (int i = 0; i < R; i++) {
+        if (sol.routes[i].stops.empty()) empties.push_back(i);
+      }
+      if (empties.empty()) return false;
+      uniform_int_distribution<int> pickEmpty(0, (int)empties.size() - 1);
+      emptyRoute = empties[pickEmpty(rng)];
+    }
 
     const auto& cache = sol.cache[r];
     int loadA = cache.segmentLoad(0, cut);
@@ -2376,7 +2379,7 @@ struct SplitRouteOperator : MoveOperator {
 
     out.type = MoveType::SplitRoute;
     out.delta = delta;
-    out.payload = SplitRouteMove{r, cut};
+    out.payload = SplitRouteMove{r, cut, emptyRoute};
     return true;
   }
 
@@ -2384,6 +2387,7 @@ struct SplitRouteOperator : MoveOperator {
     auto mv = get<SplitRouteMove>(cand.payload);
     int r = mv.route;
     int cut = mv.cut;
+    int emptyRoute = mv.emptyRoute;
 
     if (!validRouteIndex(sol, r)) return;
     auto& route = sol.routes[r];
@@ -2398,7 +2402,13 @@ struct SplitRouteOperator : MoveOperator {
     route.stops.erase(route.stops.begin() + cut + 1, route.stops.end());
     route.weight.erase(route.weight.begin() + cut + 1, route.weight.end());
 
-    sol.routes.push_back(std::move(nr));
+    if (emptyRoute >= 0) {
+      if (!validRouteIndex(sol, emptyRoute)) return;
+      if (!sol.routes[emptyRoute].stops.empty()) return;
+      sol.routes[emptyRoute] = std::move(nr);
+    } else {
+      sol.routes.push_back(std::move(nr));
+    }
 
     cleanupEmptyRoutes(sol);
     rebuildAll(data, sol);
@@ -3267,7 +3277,6 @@ static ProblemData readProblem() {
   cin >> data.stopCount >> data.addressCount >> data.walkCount
       >> m_e >> m_w >> m_t
       >> capacity >> secPerPassenger >> secPerStop;
-
   m_t *= 60;
 
   data.P.capacity = capacity;
@@ -3452,6 +3461,298 @@ static void repairSolutionToMeetDemand(const ProblemData& data, Solution& sol) {
   rebuildAll(data, sol);
 }
 
+static bool demandMatches(const ProblemData& data, const Solution& sol) {
+  if (data.stopCount <= 0) return true;
+  vector<ll> need = computeDemandByStop(data, sol);
+  vector<ll> have = computeHaveByStop(data, sol);
+  return need == have;
+}
+
+static bool hardTimeFeasible(const ProblemData& data, const Solution& sol) {
+  for (int r = 0; r < (int)sol.routes.size(); r++) {
+    int load = (r < (int)sol.routeLoad.size()) ? sol.routeLoad[r] : routeLoadSum(sol.routes[r]);
+    if (load <= 0) continue;
+    db t = (r < (int)sol.routeTime.size()) ? sol.routeTime[r] : computeRouteTime(data, sol.routes[r]);
+    if (t > data.P.maxJourneyTime + EPS) return false;
+  }
+  return true;
+}
+
+static bool walkFeasible(const ProblemData& data, const Solution& sol) {
+  int nA = min((int)sol.assign.size(), data.addressCount);
+  for (int a = 0; a < nA; a++) {
+    int s = sol.assign[a];
+    if (s < 0 || s >= data.stopCount) return false;
+    bool ok = false;
+    for (const auto& opt : data.walkOptions[a]) {
+      if (opt.stop == s && opt.dist <= data.P.maxWalkDistance + EPS) {
+        ok = true;
+        break;
+      }
+    }
+    if (!ok) return false;
+  }
+  return true;
+}
+
+static bool splitRouteByTime(const ProblemData& data, const Route& rt, vector<Route>& outRoutes) {
+  outRoutes.clear();
+  int n = (int)rt.stops.size();
+  if (n == 0) return true;
+
+  Route cur;
+  cur.stops.reserve(n);
+  cur.weight.reserve(n);
+  db curTravel = 0;
+  db curDwell = 0;
+  int last = -1;
+
+  for (int i = 0; i < n; i++) {
+    int s = rt.stops[i];
+    int w = rt.weight[i];
+    if (w <= 0) continue;
+
+    db addDwell = data.dwell(w);
+    if (cur.stops.empty()) {
+      cur.stops.push_back(s);
+      cur.weight.push_back(w);
+      curTravel = data.driveTime[s][0];
+      curDwell = addDwell;
+      last = s;
+      if (curTravel + curDwell > data.P.maxJourneyTime + EPS) return false;
+      continue;
+    }
+
+    db newTravel = curTravel - data.driveTime[last][0] + data.driveTime[last][s] + data.driveTime[s][0];
+    db newTime = newTravel + (curDwell + addDwell);
+
+    if (newTime > data.P.maxJourneyTime + EPS) {
+      outRoutes.push_back(cur);
+      cur = Route{};
+      cur.stops.reserve(n);
+      cur.weight.reserve(n);
+      cur.stops.push_back(s);
+      cur.weight.push_back(w);
+      curTravel = data.driveTime[s][0];
+      curDwell = addDwell;
+      last = s;
+      if (curTravel + curDwell > data.P.maxJourneyTime + EPS) return false;
+    } else {
+      cur.stops.push_back(s);
+      cur.weight.push_back(w);
+      curTravel = newTravel;
+      curDwell += addDwell;
+      last = s;
+    }
+  }
+
+  if (!cur.stops.empty()) outRoutes.push_back(std::move(cur));
+  return true;
+}
+
+static bool enforceHardTimeUsingEmptyRoutes(const ProblemData& data, Solution& sol) {
+  vector<int> emptyRoutes;
+  emptyRoutes.reserve(sol.routes.size());
+  for (int r = 0; r < (int)sol.routes.size(); r++) {
+    if (sol.routes[r].stops.empty()) emptyRoutes.push_back(r);
+  }
+
+  for (int r = 0; r < (int)sol.routes.size(); r++) {
+    if (sol.routes[r].stops.empty()) continue;
+    db t = (r < (int)sol.routeTime.size()) ? sol.routeTime[r] : computeRouteTime(data, sol.routes[r]);
+    if (t <= data.P.maxJourneyTime + EPS) continue;
+
+    vector<Route> splitRoutes;
+    if (!splitRouteByTime(data, sol.routes[r], splitRoutes)) return false;
+    if (splitRoutes.empty()) return false;
+    int needed = (int)splitRoutes.size() - 1;
+    if (needed > (int)emptyRoutes.size()) return false;
+
+    sol.routes[r] = splitRoutes[0];
+    for (int k = 1; k < (int)splitRoutes.size(); k++) {
+      int er = emptyRoutes.back();
+      emptyRoutes.pop_back();
+      sol.routes[er] = splitRoutes[k];
+    }
+  }
+
+  rebuildAll(data, sol);
+  return hardTimeFeasible(data, sol);
+}
+
+static bool enforceHardTimeConstraints(const ProblemData& data, Solution& sol) {
+  vector<Route> repaired;
+  repaired.reserve(sol.routes.size() * 2);
+
+  for (const auto& rt : sol.routes) {
+    if (rt.stops.empty()) continue;
+    db t = computeRouteTime(data, rt);
+    if (t <= data.P.maxJourneyTime + EPS) {
+      repaired.push_back(rt);
+      continue;
+    }
+    vector<Route> splitRoutes;
+    if (!splitRouteByTime(data, rt, splitRoutes)) return false;
+    for (auto& sr : splitRoutes) repaired.push_back(std::move(sr));
+  }
+
+  sol.routes.swap(repaired);
+  cleanupEmptyRoutes(sol);
+  rebuildAll(data, sol);
+  return hardTimeFeasible(data, sol);
+}
+
+static Solution buildInitialSolutionFixedRoutes(const ProblemData& data, int routeCount, bool& ok) {
+  ok = true;
+  Solution sol;
+  if (routeCount <= 0) {
+    ok = false;
+    return sol;
+  }
+
+  sol.routes.assign(routeCount, Route{});
+  sol.assign.assign(data.addressCount, 0);
+
+  for (int a = 0; a < data.addressCount; a++) {
+    int bestStop = 0;
+    db bestDist = INFINITY;
+
+    for (const auto& opt : data.walkOptions[a]) {
+      if (opt.dist <= data.P.maxWalkDistance + EPS) {
+        if (opt.dist + EPS < bestDist) {
+          bestDist = opt.dist;
+          bestStop = opt.stop;
+        }
+      }
+    }
+
+    if (bestDist >= INFINITY / 2) {
+      for (const auto& opt : data.walkOptions[a]) {
+        if (opt.dist + EPS < bestDist) {
+          bestDist = opt.dist;
+          bestStop = opt.stop;
+        }
+      }
+    }
+
+    sol.assign[a] = bestStop;
+  }
+
+  vector<int> demand(data.stopCount, 0);
+  for (int a = 0; a < data.addressCount; a++) {
+    demand[sol.assign[a]] += data.passengers[a];
+  }
+
+  vector<int> load(routeCount, 0);
+  int r = 0;
+  for (int s = 0; s < data.stopCount; s++) {
+    int remaining = demand[s];
+    while (remaining > 0) {
+      while (r < routeCount && load[r] == data.P.capacity) r++;
+      if (r == routeCount) {
+        ok = false;
+        return sol;
+      }
+
+      int take = remaining;
+      if (data.P.hardCapacity) take = min(take, data.P.capacity - load[r]);
+
+      Route& route = sol.routes[r];
+      int pos = findStopPosInRoute(route, s);
+      if (pos == -1) {
+        route.stops.push_back(s);
+        route.weight.push_back(take);
+      } else {
+        route.weight[pos] += take;
+      }
+
+      load[r] += take;
+      remaining -= take;
+    }
+  }
+
+  rebuildAll(data, sol);
+  return sol;
+}
+
+static void addFixedRouteOperators(LocalSearchRandomBest& ls) {
+  auto relocate = make_unique<Relocate1Operator>();
+  relocate->pNewRoute = 0.0;
+  ls.ops.push_back(std::move(relocate));
+
+  ls.ops.push_back(make_unique<Swap2Operator>());
+  ls.ops.push_back(make_unique<TwoOptIntraOperator>());
+  ls.ops.push_back(make_unique<TwoOptInterOperator>());
+
+  auto orOpt = make_unique<OrOptOperator>();
+  orOpt->pNewRoute = 0.0;
+  ls.ops.push_back(std::move(orOpt));
+
+  auto reassign = make_unique<ReassignAddressOperator>();
+  reassign->allowNewRoute = false;
+  ls.ops.push_back(std::move(reassign));
+
+  auto stopMerge = make_unique<StopMergeOperator>();
+  stopMerge->allowNewRoute = false;
+  ls.ops.push_back(std::move(stopMerge));
+
+  auto split = make_unique<SplitRouteOperator>();
+  split->requireEmptyRoute = true;
+  split->w = 0.8;
+  ls.ops.push_back(std::move(split));
+
+  ls.ops.push_back(make_unique<ThreeOptOperator>());
+  ls.ops.push_back(make_unique<ThreePointOperator>());
+  ls.ops.push_back(make_unique<CrossExchangeOperator>());
+}
+
+static bool attemptFixedRoutes(const ProblemData& data, int routeCount, mt19937& rng,
+                               double timeLimitSec, Solution& bestOut,
+                               int& bestRoutes, db& bestObj) {
+  if (timeLimitSec <= 0) return false;
+
+  bool ok = false;
+  Solution sol = buildInitialSolutionFixedRoutes(data, routeCount, ok);
+  if (!ok) return false;
+
+  bool prevKeep = g_keepEmptyRoutes;
+  g_keepEmptyRoutes = true;
+
+  improveAllRoutes2Opt(data, sol, 1);
+
+  LocalSearchRandomBest ls;
+  ls.samplesPerIteration = 1200;
+  ls.timeLimitSeconds = timeLimitSec;
+  addFixedRouteOperators(ls);
+  ls.optimize(data, sol, rng);
+
+  normalizeRoutes(data, sol);
+  rebuildAll(data, sol);
+
+  if (!hardTimeFeasible(data, sol)) {
+    if (!enforceHardTimeUsingEmptyRoutes(data, sol)) {
+      g_keepEmptyRoutes = prevKeep;
+      return false;
+    }
+    normalizeRoutes(data, sol);
+    rebuildAll(data, sol);
+  }
+
+  bool feasible = demandMatches(data, sol) && hardTimeFeasible(data, sol) && walkFeasible(data, sol);
+  g_keepEmptyRoutes = prevKeep;
+  if (!feasible) return false;
+
+  int usedRoutes = countNonEmptyRoutes(sol);
+  db obj = sol.score.empty() ? 0 : sol.score[0];
+  if (bestRoutes < 0 || usedRoutes < bestRoutes || (usedRoutes == bestRoutes && obj + EPS < bestObj)) {
+    bestRoutes = usedRoutes;
+    bestObj = obj;
+    bestOut = sol;
+  }
+
+  return true;
+}
+
 // =======================
 // Output: skip empty routes (important if you allow NEW routes)
 // =======================
@@ -3475,11 +3776,6 @@ ostream& operator << (ostream& os, const Solution& sol) {
 }
 
 int main(int argc, char** argv) {
-  // if (fopen("input.txt", "r")) {
-  //   freopen("input.txt", "r", stdin);
-  //   freopen("output.txt", "w", stdout);
-  // }
-
   if (argc >= 2) {
     if (fopen(argv[1], "r")) {
       freopen(argv[1], "r", stdin);
@@ -3492,45 +3788,105 @@ int main(int argc, char** argv) {
   cin.tie(0)->sync_with_stdio(0);
 
   ProblemData data = readProblem();
-  mt19937 rng((unsigned)chrono::steady_clock::now().time_since_epoch().count());
 
-  Solution sol = buildInitialSolution(data, rng);
-  improveAllRoutes2Opt(data, sol, 1);
+  unsigned seed = 1; // override via argv[3] or SBR_SEED
+  if (const char* env = getenv("SBR_SEED")) {
+    char* endp = nullptr;
+    unsigned long v = strtoul(env, &endp, 10);
+    if (endp && endp != env) seed = (unsigned)v;
+  }
+  if (argc >= 4) {
+    char* endp = nullptr;
+    unsigned long v = strtoul(argv[3], &endp, 10);
+    if (endp && endp != argv[3]) seed = (unsigned)v;
+  }
 
-  // Phase 1: reduce route count by trying to eliminate routes.
-  reduceRoutesPhase(data, sol, rng, 50);
+  mt19937 rng(seed);
 
-  LocalSearchBestOfEach ls;
-  ls.samplesPerOperator = 500;
-  ls.timeLimitSeconds = 600;
+  ll totalPassengers = 0;
+  for (int p : data.passengers) totalPassengers += p;
 
-  auto relocate = make_unique<Relocate1Operator>();
-  relocate->pNewRoute = 0.0;
-  ls.ops.push_back(std::move(relocate));
-  ls.ops.push_back(make_unique<Swap2Operator>());
-  ls.ops.push_back(make_unique<TwoOptIntraOperator>());
-  ls.ops.push_back(make_unique<TwoOptInterOperator>());
-  auto orOpt = make_unique<OrOptOperator>();
-  orOpt->pNewRoute = 0.0;
-  ls.ops.push_back(std::move(orOpt));
-  auto reassign = make_unique<ReassignAddressOperator>();
-  reassign->allowNewRoute = false;
-  ls.ops.push_back(std::move(reassign));
-  auto stopMerge = make_unique<StopMergeOperator>();
-  stopMerge->allowNewRoute = false;
-  ls.ops.push_back(std::move(stopMerge));
-  ls.ops.push_back(make_unique<ThreeOptOperator>());
-  ls.ops.push_back(make_unique<ThreePointOperator>());
-  ls.ops.push_back(make_unique<CrossExchangeOperator>());
-  // ls.ops.push_back(make_unique<KExchangeRuinRecreateOperator>());
+  int lo = (int)ceil(totalPassengers / max(1.0, (db)data.P.capacity));
+  if (lo < 1) lo = 1;
 
-  ls.optimize(data, sol, rng);
+  Solution base = buildInitialSolution(data, rng);
+  Solution hiSol = base;
+  bool hiOk = enforceHardTimeConstraints(data, hiSol);
+  int hi = max(lo, countNonEmptyRoutes(hiSol));
 
-  // Safety: ensure we still serve all passengers after large moves (especially k-exchange).
-  repairSolutionToMeetDemand(data, sol);
+  Solution bestSol;
+  bool haveBest = false;
+  int bestRoutes = -1;
+  db bestObj = 0;
+
+  const double totalLimit = 60.0;
+  auto start = chrono::steady_clock::now();
+  auto timeLeft = [&]() -> double {
+    return totalLimit - chrono::duration<double>(chrono::steady_clock::now() - start).count();
+  };
+
+  auto check = [&](int mid) -> bool {
+    if (bestRoutes >= 0 && mid >= bestRoutes) return true;
+
+    double budget = min(10.0, max(1.0, timeLeft() * 0.25));
+    auto midStart = chrono::steady_clock::now();
+    bool found = false;
+    while (timeLeft() > 0.3) {
+      double elapsed = chrono::duration<double>(chrono::steady_clock::now() - midStart).count();
+      if (elapsed >= budget) break;
+      double remaining = budget - elapsed;
+      double perAttempt = min(4.0, max(0.6, remaining));
+      if (attemptFixedRoutes(data, mid, rng, perAttempt, bestSol, bestRoutes, bestObj)) {
+        haveBest = true;
+        found = true;
+        break;
+      }
+      if (bestRoutes >= 0 && mid >= bestRoutes) {
+        found = true;
+        break;
+      }
+    }
+    return found;
+  };
+
+  int left = lo;
+  int right = hi;
+  // cerr << left << " " << right << "  ";
+
+  while (left <= right && timeLeft() > 0.5) {
+    int mid = left + (right - left) / 2;
+    if (check(mid)) {
+      right = mid - 1;
+    } else {
+      left = mid + 1;
+    }
+  }
+
+  Solution sol = haveBest ? bestSol : (hiOk ? hiSol : base);
+
+  g_keepEmptyRoutes = true;
   normalizeRoutes(data, sol);
-  improveAllRoutes2Opt(data, sol, 1);
+  rebuildAll(data, sol);
+  if (!walkFeasible(data, sol) || !demandMatches(data, sol) || !hardTimeFeasible(data, sol)) {
+    sol = hiOk ? hiSol : base;
+    normalizeRoutes(data, sol);
+    rebuildAll(data, sol);
+  }
 
+  int targetRoutes = (bestRoutes >= 0 ? bestRoutes : countNonEmptyRoutes(sol));
+  while (timeLeft() > 0.5) {
+    double perAttempt = min(8.0, max(1.0, timeLeft() * 0.3));
+    if (attemptFixedRoutes(data, targetRoutes, rng, perAttempt, bestSol, bestRoutes, bestObj)) {
+      haveBest = true;
+      sol = bestSol;
+      targetRoutes = (bestRoutes >= 0 ? bestRoutes : targetRoutes);
+    }
+  }
+
+  g_keepEmptyRoutes = false;
+  normalizeRoutes(data, sol);
+  rebuildAll(data, sol);
+  improveAllRoutes2Opt(data, sol, 1);
 
   cout << sol;
   return 0;

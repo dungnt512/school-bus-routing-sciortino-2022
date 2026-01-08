@@ -1,0 +1,40 @@
+0 Time: 3.21798 s
+0 -1 Worse solution! Jury = 8 12065 Participant = 8 12149
+1 Time: 20.5458 s
+1 1 Better solution! Jury = 9 9409 Participant = 9 8663
+2 Time: 9.25644 s
+2 -1 Worse solution! Jury = 6 12349 Participant = 7 11771
+3 Time: 38.2442 s
+3 -1 Worse solution! Jury = 11 17092 Participant = 12 15267
+4 Time: 3.55099 s
+4 1 Better solution! Jury = 3 3600 Participant = 3 3451
+5 Time: 19.175 s
+5 -1 Worse solution! Jury = 10 11279 Participant = 11 9932
+6 Time: 12.9209 s
+6 -1 Worse solution! Jury = 5 3631 Participant = 5 3812
+7 Time: 2.66423 s
+7 -1 Worse solution! Jury = 4 4323 Participant = 5 3977
+8 Time: 0.405502 s
+8 -1 Worse solution! Jury = 1 1674 Participant = 1 1925
+9 Time: 0.944698 s
+9 1 Better solution! Jury = 4 7446 Participant = 4 6765
+10 Time: 5.6116 s
+10 1 Better solution! Jury = 5 6252 Participant = 5 5477
+11 Time: 7.61504 s
+11 1 Better solution! Jury = 5 7309 Participant = 5 5994
+12 Time: 5.07894 s
+12 -1 Worse solution! Jury = 5 6530 Participant = 6 5906
+13 Time: 0.547982 s
+13 0 Equal solution! Jury = Participant = 3 3278
+14 Time: 0.45595 s
+14 -1 Worse solution! Jury = 3 3182 Participant = 3 3459
+15 Time: 3.82896 s
+15 -1 Worse solution! Jury = 5 6134 Participant = 5 6271
+16 Time: 1.84476 s
+16 -1 Worse solution! Jury = 4 4324 Participant = 4 4416
+17 Time: 1.90767 s
+17 -1 Worse solution! Jury = 4 4276 Participant = 4 4297
+18 Time: 5.62537 s
+18 -1 Worse solution! Jury = 4 6600 Participant = 5 6289
+19 Time: 2.99496 s
+19 1 Better solution! Jury = 3 6292 Participant = 3 5713
