@@ -2526,6 +2526,7 @@ extern double maxJourneyTime;
 extern bool useMinCoverings;
 extern double discreteLevel;
 extern int verbosity;
+extern int stage2TimeLimitSec;
 extern vector<int> stopsToPack;
 extern vector<int> weightOfStopsToPack;
 vector<int> tVec, tVec2;
@@ -2900,6 +2901,11 @@ void doMultiObjOptimisation(list <SOL> &A) {
 	bool addingStop, deletingStop;
 	SOL S, SPrime;
 	
+	clock_t endTime = 0;
+	if (stage2TimeLimitSec > 0) {
+		endTime = clock() + stage2TimeLimitSec * CLOCKS_PER_SEC;
+	}
+	
 	//Mark the initial solution in the archive as unvisited
 	visited.push_back(false);
 
@@ -2912,6 +2918,7 @@ void doMultiObjOptimisation(list <SOL> &A) {
 		cout << "\n\nNow using multiobjective techiniques to produce a range of solutions that use " << k << " buses.\n\n";
 	
 	while (true) {
+		if (endTime && clock() >= endTime) break;
 
 		//Select a non-visited member S of the archive. If all are visited, end the algorithm.
 		if (verbosity >= 1) {
@@ -2923,6 +2930,7 @@ void doMultiObjOptimisation(list <SOL> &A) {
 					
 		//If we are here, S is now a solution we will be visiting from (and has therefore been marked as visited)
 		for (v = 1; v < stops.size(); v++) {
+			if (endTime && clock() >= endTime) break;
 			if (!S.stopUsed[v]) {
 				//Explore consequences of adding the currently unusued stop v
 				calcSavingWhenAddingAStop(S, v, saving, addingStop);
@@ -2965,6 +2973,7 @@ vector<vector<int> > stopAdjList; //Gives a list of addresses adjacent to each s
 vector<vector<int> > addrAdjList; //Gives a list of stops adjacent to each address
 vector<vector<bool> > addrStopAdj;
 int totalPassengers, maxBusCapacity, kInit, timePerK;
+int stage2TimeLimitSec = 60;
 string distUnits;
 double maxWalkDist;
 double minEligibilityDist;
@@ -3176,7 +3185,7 @@ int main(int argc, char *argv[]){
 	// 	usage();
 	// 	exit(1);
 	// }
-  stageOneOnly = true;
+  // stageOneOnly = true;
 
   // ifstream in("0.in");
   readInput(std::cin);

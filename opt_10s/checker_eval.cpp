@@ -78,7 +78,7 @@ int solve(string filename) {
   }
 
 
-  auto calc = [&](istream& is) -> pair<int, db> {
+  auto calc = [&](istream& is, string instance = "out") -> pair<int, db> {
     int n_bus;
     // scanf("%d", &n_bus);
     is >> n_bus;
@@ -102,8 +102,10 @@ int solve(string filename) {
         tot[route[j]] += weight[j];
         tot_c += weight[j];
       }
-      if (tot_c > capacity) 
+      if (tot_c > capacity) {
+        cerr << instance << " capacity  ";
         return {-1, -1};
+      }
       db T = drive_time[route.back()][0];
       for (int i = 1; i < route_size; i++) {
         T += drive_time[route[i - 1]][route[i]];
@@ -112,9 +114,11 @@ int solve(string filename) {
         T += ser_per_stop;
         T += sec_per_passenger * weight[i];
       }
-      if (T > m_t + eps) 
+      if (T > m_t + eps) {
+        cerr << instance << " time  ";
         // obj += m_t + m_t * (1 + T - m_t);
         return {-1, -1};
+      }
       else 
         obj += T;
     }
@@ -122,36 +126,40 @@ int solve(string filename) {
     for (int j = 0; j < num_addr; j++) {
       // scanf("%d", &assign[j]);
       is >> assign[j];
-      if (walk_distance[j][assign[j]] > m_w + eps) 
+      if (walk_distance[j][assign[j]] > m_w + eps) {
+        cerr << instance << " walk  ";
         return {-1, -1};
+      }
       tot_a[assign[j]] += num_passengers[j];
     }
 
     for (int i = 0; i < num_stop; i++) {
       // if (tot[i] < tot_a[i]) 
-      if (tot[i] != tot_a[i])
+      if (tot[i] != tot_a[i]) {
+        cerr << instance << " tot  ";
         return {-1, -1};
+      }
     }
 
     return {n_bus, obj};
   };
 
-  ll startTime = chrono::steady_clock::now().time_since_epoch().count();
-  system((".\\solver_ls_run " + INP_DIR + " " + ANS_DIR).c_str());
-  ll endTime = chrono::steady_clock::now().time_since_epoch().count();
-  cout << filename << " Time: " << (endTime - startTime) / 1e9 << " s\n";
-  cerr << filename << " Time: " << (endTime - startTime) / 1e9 << " s\n";
+  // ll startTime = chrono::steady_clock::now().time_since_epoch().count();
+  // system((".\\solver_ls_run " + INP_DIR + " " + ANS_DIR).c_str());
+  // ll endTime = chrono::steady_clock::now().time_since_epoch().count();
+  // cout << filename << " Time: " << (endTime - startTime) / 1e9 << " s\n";
+  // cerr << filename << " Time: " << (endTime - startTime) / 1e9 << " s\n";
 
   ifstream fans(OUT_DIR);
   ifstream fout(ANS_DIR);
-  auto w_ans = calc(fans);
-  auto w_out = calc(fout);
+  auto w_ans = calc(fans, "ans");
   if (w_ans.first < 0) {
     // printf("%d Invalid solution from jury\n", -2);
     cout << filename << " " << -2 << " Invalid solution from jury\n";
     cerr << filename << " " << -2 << " Invalid solution from jury\n";
     return 0;
   }
+  auto w_out = calc(fout);
   if (w_out.first < 0) {
     // printf("%d Invalid solution from participant\n", -2);
     cout << filename << " " << -2 << " Invalid solution from participant\n";

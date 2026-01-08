@@ -3706,9 +3706,7 @@ static void addFixedRouteOperators(LocalSearchRandomBest& ls) {
   ls.ops.push_back(make_unique<CrossExchangeOperator>());
 }
 
-static bool attemptFixedRoutes(const ProblemData& data, int routeCount, mt19937& rng,
-                               double timeLimitSec, Solution& bestOut,
-                               int& bestRoutes, db& bestObj) {
+static bool attemptFixedRoutes(const ProblemData& data, int routeCount, mt19937& rng, double timeLimitSec, Solution& bestOut, int& bestRoutes, db& bestObj) {
   if (timeLimitSec <= 0) return false;
 
   bool ok = false;
